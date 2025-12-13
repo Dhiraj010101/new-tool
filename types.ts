@@ -25,6 +25,7 @@ export interface AppState {
   step: 'prompt' | 'script' | 'assets' | 'editor';
   prompt: string;
   artStyle: string;
+  voice: string;
   scenes: ScriptScene[];
   assets: Record<number, GeneratedAsset>;
   backgroundMusic: File | null;

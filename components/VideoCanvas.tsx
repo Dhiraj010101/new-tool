@@ -60,10 +60,12 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
   // Helper to find supported mime type
   const getSupportedMimeType = () => {
     const types = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-      'video/mp4'
+      'video/mp4',
+      'video/mp4;codecs=avc1',
+      'video/webm;codecs=h264',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
     ];
     return types.find(type => MediaRecorder.isTypeSupported(type));
   };
@@ -85,6 +87,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
   const stopAudio = () => {
     activeSourcesRef.current.forEach(node => {
       try { node.stop(); } catch(e) {}
+      try { node.disconnect(); } catch(e) {}
     });
     activeSourcesRef.current = [];
   };
@@ -102,8 +105,8 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       const bgGain = ctx.createGain();
       bgGain.gain.value = 0.15;
       bgSource.connect(bgGain);
-      bgGain.connect(ctx.destination);
-      bgGain.connect(destinationRef.current);
+      bgGain.connect(ctx.destination); // For hearing it
+      bgGain.connect(destinationRef.current); // For recording it
       bgSource.start(0, startOffset % bgMusicBuffer.duration);
       activeSourcesRef.current.push(bgSource);
     }
@@ -225,9 +228,8 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     if (requestRef.current) cancelAnimationFrame(requestRef.current);
     
     // Stop recording if active
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
-        mediaRecorderRef.current = null;
     }
   };
 
@@ -263,25 +265,35 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
         const canvas = canvasRef.current;
         const dest = destinationRef.current;
         
-        if (!canvas || !dest) return;
+        if (!canvas || !dest) {
+            console.error("Canvas or Audio Destination not initialized");
+            return;
+        }
 
         // Capture canvas stream at 30 FPS
         const stream = canvas.captureStream(30);
         
         // Add Audio Track
+        // Important: Dest stream must have tracks.
         const audioTracks = dest.stream.getAudioTracks();
         if (audioTracks.length > 0) {
             stream.addTrack(audioTracks[0]);
+        } else {
+            console.warn("No audio tracks found in destination stream");
         }
 
         const mimeType = getSupportedMimeType();
         if (!mimeType) {
-            alert("Video export is not supported in this browser.");
+            alert("Video download is not supported in this browser.");
             return;
         }
 
         try {
-            const recorder = new MediaRecorder(stream, { mimeType });
+            // High bitrate for quality
+            const recorder = new MediaRecorder(stream, { 
+                mimeType,
+                videoBitsPerSecond: 5000000 // 5Mbps
+            });
 
             recorder.ondataavailable = (e) => {
                 if (e.data && e.data.size > 0) {
@@ -292,22 +304,24 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
             recorder.onstop = () => {
                 const blob = new Blob(chunksRef.current, { type: mimeType });
                 if (blob.size === 0) {
-                    alert("Recording failed: Empty video file.");
+                    alert("Recording failed: Empty video file. Please try again.");
                     return;
                 }
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
                 const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-                a.download = `gemini-story.${ext}`;
+                a.download = `gemini-story-${Date.now()}.${ext}`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                setTimeout(() => URL.revokeObjectURL(url), 100);
             };
 
             mediaRecorderRef.current = recorder;
-            recorder.start();
+            
+            // Start recording with timeslice to ensure data available events fire regularly
+            recorder.start(100); 
 
             // Start Playback from 0 for recording
             isPlayingRef.current = true;
@@ -318,7 +332,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
 
         } catch (err) {
             console.error("Recording error:", err);
-            alert("Failed to start video recording.");
+            alert(`Failed to start video recording: ${(err as Error).message}`);
         }
     },
     stopRecording: () => {
