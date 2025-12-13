@@ -9,10 +9,11 @@ export const generateScript = async (prompt: string): Promise<ScriptScene[]> => 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: `Create a video script based on this story prompt: "${prompt}". 
-      Break it down into 3 to 6 key scenes. 
+      Break it down into 7 to 12 distinct scenes. 
+      Ensure the pacing is engaging and dynamic to attract and retain viewer attention.
       For each scene, provide a detailed 'visualDescription' optimized for an AI image generator (photorealistic, cinematic), 
       and a 'narration' script for a voiceover artist. 
-      Estimate duration in seconds (usually 5-10s based on word count).`,
+      Estimate duration in seconds (usually 4-8s per scene).`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {

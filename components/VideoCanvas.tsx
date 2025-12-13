@@ -57,6 +57,17 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
 
   const totalDuration = getTimeline()[getTimeline().length - 1]?.end || 0;
 
+  // Helper to find supported mime type
+  const getSupportedMimeType = () => {
+    const types = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/mp4'
+    ];
+    return types.find(type => MediaRecorder.isTypeSupported(type));
+  };
+
   useEffect(() => {
     // Initialize AudioContext
     if (!audioContextRef.current) {
@@ -65,7 +76,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     }
     
     return () => {
-      cancelAnimationFrame(requestRef.current!);
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
       stopAudio();
       audioContextRef.current?.close();
     };
@@ -76,42 +87,6 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       try { node.stop(); } catch(e) {}
     });
     activeSourcesRef.current = [];
-  };
-
-  const playAudioForTime = (currentTime: number, timeline: any[]) => {
-    if (!audioContextRef.current || !destinationRef.current) return;
-    const ctx = audioContextRef.current;
-
-    // Background Music (Looping)
-    if (bgMusicBuffer) {
-      const bgSource = ctx.createBufferSource();
-      bgSource.buffer = bgMusicBuffer;
-      bgSource.loop = true;
-      const bgGain = ctx.createGain();
-      bgGain.gain.value = 0.15; // Low volume for background
-      bgSource.connect(bgGain);
-      bgGain.connect(ctx.destination); // For hearing
-      bgGain.connect(destinationRef.current); // For recording
-      
-      // Start slightly in the past to account for offset if scrubbing (simplified for now: just start)
-      // For accurate seeking, we'd need more complex logic. 
-      // Since this is a "Preview/Render" mainly, we start from 0 or resume.
-      // For this simplified version, we restart music on play.
-      bgSource.start(0, currentTime % bgMusicBuffer.duration);
-      activeSourcesRef.current.push(bgSource);
-    }
-
-    // Voiceovers
-    timeline.forEach(item => {
-      const asset = assets[item.id];
-      if (asset?.audioBuffer) {
-        if (item.start <= currentTime && item.end > currentTime) {
-          // Should be playing
-          // But handling strict sync in a loop is hard. 
-          // Instead, we schedule ALL audio relative to ctx.currentTime when Play is clicked.
-        }
-      }
-    });
   };
 
   const scheduleAudio = (startOffset: number) => {
@@ -206,8 +181,6 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     // Draw Current
     if (asset?.imageElement) {
       const scale = 1.0 + (progress * 0.15); // Zoom in
-      // Pan slightly: center stays roughly center but we crop differently
-      // Simplified: Draw image larger than canvas and center it
       
       const w = width * scale;
       const h = height * scale;
@@ -225,9 +198,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
         ctx.fillText(`Scene ${currentScene.id}: Generating visuals...`, 20, 50);
     }
 
-    // VFX: Film Grain Overlay (Simulated with noise)
-    // For performance, maybe just a static semi-transparent overlay or nothing
-    // Let's add a Vignette
+    // VFX: Vignette
     const gradient = ctx.createRadialGradient(width/2, height/2, width/3, width/2, height/2, width);
     gradient.addColorStop(0, 'rgba(0,0,0,0)');
     gradient.addColorStop(1, 'rgba(0,0,0,0.6)');
@@ -236,7 +207,6 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     ctx.fillRect(0, 0, width, height);
 
     // Transitions (Crossfade)
-    // Check if we are near the end of the scene (last 1 second) and there is a next scene
     const transitionDuration = 1.0;
     if (currentScene.end - time < transitionDuration && currentIdx < timeline.length - 1) {
       const nextScene = timeline[currentIdx + 1];
@@ -244,7 +214,6 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       if (nextAsset?.imageElement) {
         const transProgress = 1 - ((currentScene.end - time) / transitionDuration);
         ctx.globalAlpha = transProgress;
-        // Draw next scene (static start for now, or could pre-animate)
         ctx.drawImage(nextAsset.imageElement, 0, 0, width, height);
       }
     }
@@ -254,8 +223,11 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     isPlayingRef.current = false;
     stopAudio();
     if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    
+    // Stop recording if active
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
     }
   };
 
@@ -278,51 +250,76 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       // Capture current progress
       pauseTimeRef.current = (Date.now() - startTimeRef.current) / 1000;
     },
-    record: () => {
-        // Reset and play from start for clean recording
-        isPlayingRef.current = false;
-        stopAudio();
-        if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    record: async () => {
+        // Ensure clean state
+        handleStop();
         
+        // Ensure Audio Context is ready
+        if (audioContextRef.current?.state === 'suspended') {
+            await audioContextRef.current.resume();
+        }
+
         chunksRef.current = [];
         const canvas = canvasRef.current;
-        const ctx = audioContextRef.current;
         const dest = destinationRef.current;
         
-        if (!canvas || !ctx || !dest) return;
+        if (!canvas || !dest) return;
 
-        const stream = canvas.captureStream(30); // 30 FPS
-        // Add audio track
-        const audioTrack = dest.stream.getAudioTracks()[0];
-        if (audioTrack) stream.addTrack(audioTrack);
+        // Capture canvas stream at 30 FPS
+        const stream = canvas.captureStream(30);
+        
+        // Add Audio Track
+        const audioTracks = dest.stream.getAudioTracks();
+        if (audioTracks.length > 0) {
+            stream.addTrack(audioTracks[0]);
+        }
 
-        const recorder = new MediaRecorder(stream, {
-            mimeType: 'video/webm;codecs=vp9'
-        });
+        const mimeType = getSupportedMimeType();
+        if (!mimeType) {
+            alert("Video export is not supported in this browser.");
+            return;
+        }
 
-        recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) chunksRef.current.push(e.data);
-        };
+        try {
+            const recorder = new MediaRecorder(stream, { mimeType });
 
-        recorder.onstop = () => {
-            const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'gemini-story.webm';
-            a.click();
-            URL.revokeObjectURL(url);
-        };
+            recorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) {
+                    chunksRef.current.push(e.data);
+                }
+            };
 
-        mediaRecorderRef.current = recorder;
-        recorder.start();
+            recorder.onstop = () => {
+                const blob = new Blob(chunksRef.current, { type: mimeType });
+                if (blob.size === 0) {
+                    alert("Recording failed: Empty video file.");
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+                a.download = `gemini-story.${ext}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
 
-        // Start Playback from 0
-        isPlayingRef.current = true;
-        startTimeRef.current = Date.now();
-        pauseTimeRef.current = 0;
-        scheduleAudio(0);
-        requestRef.current = requestAnimationFrame(drawFrame);
+            mediaRecorderRef.current = recorder;
+            recorder.start();
+
+            // Start Playback from 0 for recording
+            isPlayingRef.current = true;
+            startTimeRef.current = Date.now();
+            pauseTimeRef.current = 0;
+            scheduleAudio(0);
+            requestRef.current = requestAnimationFrame(drawFrame);
+
+        } catch (err) {
+            console.error("Recording error:", err);
+            alert("Failed to start video recording.");
+        }
     },
     stopRecording: () => {
         handleStop();
