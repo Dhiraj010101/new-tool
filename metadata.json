@@ -1,0 +1,5 @@
+{
+  "name": "Video Gen Tool",
+  "description": "An AI-powered video creator that turns story prompts into fully narrated, edited videos with transitions and VFX.",
+  "requestFramePermissions": []
+}
