@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Download, Video, Loader2, Music, Wand2, Plus, Film, ChevronRight, Palette } from 'lucide-react';
+import { Play, Pause, Download, Video, Loader2, Music, Wand2, Plus, Film, ChevronRight, Palette, RefreshCw, Upload, Mic, Image as ImageIcon } from 'lucide-react';
 import { generateScript, generateSceneImage, generateNarration, decodeAudioData } from './services/geminiService';
 import VideoCanvas, { VideoCanvasHandle } from './components/VideoCanvas';
 import { ScriptScene, GeneratedAsset, AppState } from './types';
@@ -33,6 +33,7 @@ function App() {
   
   const videoRef = useRef<VideoCanvasHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sceneFileInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // Load Image and Audio helper
   const loadAssets = async (scenes: ScriptScene[]) => {
@@ -101,6 +102,96 @@ function App() {
     setState(prev => ({ ...prev, step: 'assets' }));
     await loadAssets(state.scenes);
     setState(prev => ({ ...prev, step: 'editor' }));
+  };
+
+  const handleRegenerateImage = async (sceneId: number) => {
+    const scene = state.scenes.find(s => s.id === sceneId);
+    if (!scene) return;
+
+    setLoadingStatus(`Regenerating visual for Scene ${sceneId}...`);
+    setIsLoading(true);
+
+    try {
+      const imgBase64 = await generateSceneImage(scene.visualDescription, state.artStyle);
+      const img = new Image();
+      img.src = imgBase64;
+      await new Promise((resolve) => { img.onload = resolve; });
+
+      setState(prev => ({
+        ...prev,
+        assets: {
+          ...prev.assets,
+          [sceneId]: {
+            ...prev.assets[sceneId],
+            imageUrl: imgBase64,
+            imageElement: img,
+          }
+        }
+      }));
+    } catch (e) {
+      alert("Failed to regenerate image");
+    } finally {
+      setIsLoading(false);
+      setLoadingStatus('');
+    }
+  };
+
+  const handleRegenerateAudio = async (sceneId: number) => {
+    const scene = state.scenes.find(s => s.id === sceneId);
+    if (!scene) return;
+
+    setLoadingStatus(`Regenerating audio for Scene ${sceneId}...`);
+    setIsLoading(true);
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+    try {
+      const audioBase64 = await generateNarration(scene.narration);
+      const audioBuffer = await decodeAudioData(audioBase64, audioContext);
+
+      setState(prev => ({
+        ...prev,
+        assets: {
+          ...prev.assets,
+          [sceneId]: {
+            ...prev.assets[sceneId],
+            audioUrl: `data:audio/mp3;base64,${audioBase64}`,
+            audioBuffer: audioBuffer,
+          }
+        }
+      }));
+    } catch (e) {
+      alert("Failed to regenerate audio");
+    } finally {
+      setIsLoading(false);
+      setLoadingStatus('');
+      audioContext.close();
+    }
+  };
+
+  const handleSceneImageUpload = (sceneId: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const result = event.target?.result as string;
+        const img = new Image();
+        img.src = result;
+        img.onload = () => {
+          setState(prev => ({
+            ...prev,
+            assets: {
+              ...prev.assets,
+              [sceneId]: {
+                ...prev.assets[sceneId],
+                imageUrl: result,
+                imageElement: img,
+              }
+            }
+          }));
+        };
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleMusicUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -356,19 +447,56 @@ function App() {
                     <h3 className="font-semibold mb-4 text-sm text-zinc-400 uppercase tracking-wider">Generated Scenes</h3>
                     <div className="space-y-3">
                         {state.scenes.map(scene => (
-                            <div key={scene.id} className="flex gap-3 items-center p-2 rounded-lg bg-zinc-900 border border-zinc-800">
-                                <div className="w-9 h-16 bg-zinc-800 rounded overflow-hidden shrink-0">
-                                    {state.assets[scene.id]?.imageUrl && (
-                                        <img 
-                                            src={state.assets[scene.id].imageUrl} 
-                                            className="w-full h-full object-cover" 
-                                            alt={`Scene ${scene.id}`} 
+                            <div key={scene.id} className="group flex flex-col gap-2 p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition-colors">
+                                <div className="flex gap-3 items-start">
+                                    <div className="relative w-12 h-20 bg-zinc-800 rounded overflow-hidden shrink-0 group/image">
+                                        {state.assets[scene.id]?.imageUrl && (
+                                            <img 
+                                                src={state.assets[scene.id].imageUrl} 
+                                                className="w-full h-full object-cover" 
+                                                alt={`Scene ${scene.id}`} 
+                                            />
+                                        )}
+                                        {/* Hidden File Input for this scene */}
+                                        <input 
+                                            type="file" 
+                                            ref={el => sceneFileInputRefs.current[scene.id] = el}
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={(e) => handleSceneImageUpload(scene.id, e)}
                                         />
-                                    )}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <p className="text-xs text-zinc-500 font-semibold">SCENE {scene.id}</p>
+                                        </div>
+                                        <p className="text-xs text-zinc-300 line-clamp-3 leading-relaxed">"{scene.narration}"</p>
+                                    </div>
                                 </div>
-                                <div className="min-w-0">
-                                    <p className="text-xs text-zinc-500 mb-0.5">Scene {scene.id}</p>
-                                    <p className="text-xs truncate text-zinc-300">"{scene.narration}"</p>
+                                
+                                {/* Tools */}
+                                <div className="flex gap-2 mt-1 pt-2 border-t border-zinc-800/50">
+                                    <button 
+                                        onClick={() => handleRegenerateImage(scene.id)}
+                                        title="Regenerate Image"
+                                        className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-blue-400 transition-colors"
+                                    >
+                                        <RefreshCw className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                        onClick={() => sceneFileInputRefs.current[scene.id]?.click()}
+                                        title="Upload Custom Image"
+                                        className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-green-400 transition-colors"
+                                    >
+                                        <Upload className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                        onClick={() => handleRegenerateAudio(scene.id)}
+                                        title="Regenerate Voiceover"
+                                        className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-purple-400 transition-colors ml-auto"
+                                    >
+                                        <Mic className="w-3.5 h-3.5" />
+                                    </button>
                                 </div>
                             </div>
                         ))}

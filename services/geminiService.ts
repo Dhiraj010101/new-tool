@@ -109,5 +109,21 @@ export const decodeAudioData = async (base64Data: string, context: AudioContext)
   for (let i = 0; i < len; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
-  return await context.decodeAudioData(bytes.buffer);
+  
+  // Gemini TTS returns raw PCM (16-bit signed integer, 24kHz, mono)
+  const sampleRate = 24000;
+  
+  // Ensure we have an even number of bytes for Int16Array
+  const dataLen = len % 2 === 0 ? len : len - 1;
+  const dataInt16 = new Int16Array(bytes.buffer, 0, dataLen / 2);
+  
+  const audioBuffer = context.createBuffer(1, dataInt16.length, sampleRate);
+  const channelData = audioBuffer.getChannelData(0);
+  
+  // Normalize Int16 to Float32 [-1.0, 1.0]
+  for (let i = 0; i < dataInt16.length; i++) {
+    channelData[i] = dataInt16[i] / 32768.0;
+  }
+  
+  return audioBuffer;
 };
