@@ -70,8 +70,8 @@ export const generateScript = async (prompt: string): Promise<ScriptScene[]> => 
 export const generateSceneImage = async (visualDescription: string, style: string): Promise<string> => {
   return withRetry(async () => {
     try {
-      // Construct prompt with style instruction
-      const prompt = `${style} style. High quality, detailed, 8k resolution. ${visualDescription}`;
+      // Explicitly request an image to avoid conversational text-only responses
+      const prompt = `Generate an image. ${style} style. High quality, detailed, 8k resolution. ${visualDescription}`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
@@ -90,8 +90,14 @@ export const generateSceneImage = async (visualDescription: string, style: strin
         }
       });
 
+      if (!response.candidates || response.candidates.length === 0) {
+        throw new Error("No response candidates returned from API.");
+      }
+
+      const candidate = response.candidates[0];
+
       // Iterate through all parts to find the image
-      const parts = response.candidates?.[0]?.content?.parts || [];
+      const parts = candidate.content?.parts || [];
       for (const part of parts) {
         if (part.inlineData && part.inlineData.data) {
           const mimeType = part.inlineData.mimeType || 'image/png';
@@ -99,18 +105,19 @@ export const generateSceneImage = async (visualDescription: string, style: strin
         }
       }
 
+      // If no image found, check finishReason
+      if (candidate.finishReason === 'SAFETY') {
+        throw new Error("Image generation blocked by safety filters.");
+      }
+
       // If no image found, check for text refusal/explanation
       const textPart = parts.find(p => p.text)?.text;
       if (textPart) {
-          throw new Error(`Image generation failed/refused: ${textPart}`);
+          // If the model returns text instead of an image, it's often a refusal or a hallucination of capability
+          throw new Error(`Image generation failed. Model responded with text only: ${textPart}`);
       }
 
-      // Check if candidates exist at all
-      if (!response.candidates || response.candidates.length === 0) {
-          throw new Error("No response candidates returned from API.");
-      }
-
-      throw new Error("No image data found in response (Safety filter likely triggered)");
+      throw new Error("No image data found in response.");
     } catch (error) {
       console.error("Image generation failed:", error);
       throw error;
@@ -143,7 +150,7 @@ export const generateNarration = async (text: string, voiceName: string = 'Fenri
       console.error("TTS generation failed:", error);
       throw error;
     }
-  }, 10, 5000, "Generate TTS");
+  }, 10, 10000, "Generate TTS");
 };
 
 // Helper to decode base64 audio to AudioBuffer

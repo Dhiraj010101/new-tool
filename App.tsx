@@ -70,10 +70,24 @@ function App() {
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   
   const videoRef = useRef<VideoCanvasHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sceneFileInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+
+  // Protect against accidental tab closure during export
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        if (isExporting) {
+            e.preventDefault();
+            e.returnValue = ''; // Legacy support
+            return ''; 
+        }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isExporting]);
 
   // Generate ambient music
   const generateAmbientMusic = () => {
@@ -129,8 +143,8 @@ function App() {
         // Add delay between scenes to prevent rate limiting (Throttle)
         if (i > 0) {
              setLoadingStatus(`Pacing generation to optimize quality (Scene ${i} complete)...`);
-             // 6 seconds delay to respect Free Tier 15 RPM
-             await new Promise(resolve => setTimeout(resolve, 6000));
+             // Increase to 10 seconds to be safe against 15 RPM limits and 429 errors
+             await new Promise(resolve => setTimeout(resolve, 10000));
         }
 
         setLoadingStatus(`Generating Scene ${i + 1} of ${scenes.length}...`);
@@ -144,8 +158,8 @@ function App() {
             // 1. Generate Image
             const imgBase64 = await generateSceneImage(scene.visualDescription, state.artStyle);
             
-            // Brief pause between requests
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            // Brief pause between requests (Increased to 3s)
+            await new Promise(resolve => setTimeout(resolve, 3000));
             
             // 2. Generate Audio (Using selected voice)
             const audioBase64 = await generateNarration(scene.narration, state.voice);
@@ -350,12 +364,14 @@ function App() {
   };
 
   const handleDownload = () => {
-    if (confirm("Generating the video takes real-time playback duration. Please do not close the tab.")) {
-        setIsExporting(true);
+    // Check if assets are ready implicitly by calling record, which has checks
+    setIsExporting(true);
+    // Slight delay to allow React state to render the loading overlay first
+    setTimeout(() => {
         videoRef.current?.record();
-        // setIsPlaying(true) is handled inside record()
+        // We set isPlaying to true here to update the UI play button state
         setIsPlaying(true);
-    }
+    }, 100);
   };
 
   const onPlaybackEnd = () => {
@@ -537,14 +553,26 @@ function App() {
                         bgMusicBuffer={state.backgroundMusicBuffer}
                         width={720}
                         height={1280}
-                        onProgress={(curr, total) => setPlaybackProgress((curr/total) * 100)}
+                        onProgress={(curr, total, sceneIdx) => {
+                           setPlaybackProgress((curr/total) * 100);
+                           setCurrentSceneIndex(sceneIdx);
+                        }}
                         onPlaybackEnd={onPlaybackEnd}
                     />
                     {isExporting && (
-                        <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center backdrop-blur-sm rounded-xl z-20">
-                            <Loader2 className="w-12 h-12 text-red-500 animate-spin mb-4" />
-                            <div className="bg-black/80 px-4 py-2 rounded-full border border-zinc-700">
-                                <span className="text-white font-medium animate-pulse">Generating & Downloading Video...</span>
+                        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center backdrop-blur-sm rounded-xl z-20">
+                            <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+                            <div className="bg-black/90 px-8 py-6 rounded-2xl border border-blue-500/30 flex flex-col items-center max-w-md text-center">
+                                <span className="text-white font-bold text-xl mb-1">Analyzing & Exporting</span>
+                                <span className="text-blue-400 font-mono tracking-wider text-sm mb-3 uppercase">
+                                  Processing Scene {currentSceneIndex + 1} of {state.scenes.length}
+                                </span>
+                                <p className="text-zinc-500 text-xs italic truncate w-full px-4">
+                                  "{state.scenes[currentSceneIndex]?.narration.substring(0, 60)}..."
+                                </p>
+                                <div className="mt-4 text-[10px] text-red-400 font-bold bg-red-900/20 px-3 py-1 rounded-full border border-red-900/50">
+                                  DO NOT CLOSE OR RELOAD TAB
+                                </div>
                             </div>
                         </div>
                     )}
@@ -577,7 +605,7 @@ function App() {
                             className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-900/20"
                         >
                             {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                            <span>{isExporting ? 'Processing...' : 'Download Video'}</span>
+                            <span>{isExporting ? 'Exporting...' : 'Export Video'}</span>
                         </button>
                     </div>
                 </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { ScriptScene, GeneratedAsset } from '../types';
 
 interface VideoCanvasProps {
@@ -8,7 +8,7 @@ interface VideoCanvasProps {
   width: number;
   height: number;
   onPlaybackEnd: () => void;
-  onProgress: (time: number, duration: number) => void;
+  onProgress: (time: number, duration: number, sceneIndex: number) => void;
 }
 
 export interface VideoCanvasHandle {
@@ -38,6 +38,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
   const startTimeRef = useRef<number>(0);
   const pauseTimeRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(false);
+  const isRecordingRef = useRef<boolean>(false); 
   
   // Audio nodes for cleanup
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
@@ -47,7 +48,6 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     let cursor = 0;
     return scenes.map(scene => {
       const asset = assets[scene.id];
-      // Use audio duration if available, else estimate
       const duration = asset?.audioBuffer?.duration || scene.durationEstimate;
       const start = cursor;
       cursor += duration;
@@ -57,21 +57,31 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
 
   const totalDuration = getTimeline()[getTimeline().length - 1]?.end || 0;
 
-  // Helper to find supported mime type
+  // Validate that all assets needed for the timeline are ready
+  const validateAssets = (): boolean => {
+    const timeline = getTimeline();
+    for (const scene of timeline) {
+        const asset = assets[scene.id];
+        // Check if asset exists, has an image element, and that image is fully loaded
+        if (!asset || !asset.imageElement || !asset.imageElement.complete || asset.imageElement.naturalWidth === 0) {
+            return false;
+        }
+    }
+    return true;
+  };
+
+  // Prioritize WebM for better browser compatibility in MediaRecorder
   const getSupportedMimeType = () => {
     const types = [
-      'video/mp4',
-      'video/mp4;codecs=avc1',
-      'video/webm;codecs=h264',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
-      'video/webm'
+      'video/webm',
+      'video/mp4',
     ];
     return types.find(type => MediaRecorder.isTypeSupported(type));
   };
 
   useEffect(() => {
-    // Initialize AudioContext
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       destinationRef.current = audioContextRef.current.createMediaStreamDestination();
@@ -105,8 +115,11 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       const bgGain = ctx.createGain();
       bgGain.gain.value = 0.15;
       bgSource.connect(bgGain);
-      bgGain.connect(ctx.destination); // For hearing it
-      bgGain.connect(destinationRef.current); // For recording it
+      
+      // Connect to speakers AND recording destination
+      bgGain.connect(ctx.destination);
+      bgGain.connect(destinationRef.current);
+      
       bgSource.start(0, startOffset % bgMusicBuffer.duration);
       activeSourcesRef.current.push(bgSource);
     }
@@ -115,13 +128,9 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     timeline.forEach(item => {
       const asset = assets[item.id];
       if (asset?.audioBuffer) {
-        // Calculate when this clip should start relative to NOW
-        // item.start is absolute timeline time.
-        // startOffset is where we are starting playback from.
         const delay = item.start - startOffset;
         
         if (delay >= 0) {
-          // Schedule in future
           const source = ctx.createBufferSource();
           source.buffer = asset.audioBuffer;
           source.connect(ctx.destination);
@@ -129,32 +138,50 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
           source.start(ctx.currentTime + delay);
           activeSourcesRef.current.push(source);
         } else if (item.end > startOffset) {
-           // Should be playing right now (started in past)
            const offset = startOffset - item.start;
            const source = ctx.createBufferSource();
            source.buffer = asset.audioBuffer;
            source.connect(ctx.destination);
            source.connect(destinationRef.current!);
-           source.start(0, offset); // play remaining
+           source.start(0, offset); 
            activeSourcesRef.current.push(source);
         }
       }
     });
   };
 
-  const drawFrame = (timestamp: number) => {
+  const drawFrame = () => {
     if (!isPlayingRef.current) return;
     
-    // Calculate elapsed time
     const elapsed = (Date.now() - startTimeRef.current) / 1000;
+    const timeline = getTimeline();
     
+    // Find current scene index for analysis/feedback
+    const clampedTime = Math.min(elapsed, totalDuration - 0.001);
+    let currentIdx = timeline.findIndex(t => clampedTime >= t.start && clampedTime < t.end);
+    if (currentIdx === -1 && timeline.length > 0) {
+        currentIdx = timeline.length - 1;
+    }
+
     if (elapsed >= totalDuration) {
-      handleStop();
-      onPlaybackEnd();
+      // Force strict final frame render
+      renderCanvas(totalDuration - 0.001);
+
+      // Handle Stop / Tail
+      if (isRecordingRef.current) {
+        // Extended Post-roll: Wait 1 full second to ensure the end is captured cleanly
+        setTimeout(() => {
+            handleStop();
+            onPlaybackEnd();
+        }, 1000); 
+      } else {
+        handleStop();
+        onPlaybackEnd();
+      }
       return;
     }
 
-    onProgress(elapsed, totalDuration);
+    onProgress(elapsed, totalDuration, currentIdx);
     renderCanvas(elapsed);
     requestRef.current = requestAnimationFrame(drawFrame);
   };
@@ -165,26 +192,28 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Background
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
 
     const timeline = getTimeline();
+    if (timeline.length === 0) return;
     
-    // Find current scene and maybe next scene for transition
-    const currentIdx = timeline.findIndex(t => time >= t.start && time < t.end);
-    if (currentIdx === -1) return;
+    const clampedTime = Math.min(time, totalDuration - 0.001);
+    let currentIdx = timeline.findIndex(t => clampedTime >= t.start && clampedTime < t.end);
+    
+    if (currentIdx === -1) {
+        currentIdx = timeline.length - 1;
+    }
 
     const currentScene = timeline[currentIdx];
     const asset = assets[currentScene.id];
 
-    // Ken Burns Effect Math
-    // Scale from 1.0 to 1.15 over the duration
-    const progress = (time - currentScene.start) / currentScene.duration;
+    // Ken Burns / Zoom Effect
+    const progress = (clampedTime - currentScene.start) / currentScene.duration;
     
-    // Draw Current
-    if (asset?.imageElement) {
-      const scale = 1.0 + (progress * 0.15); // Zoom in
-      
+    if (asset?.imageElement && asset.imageElement.complete) {
+      const scale = 1.0 + (progress * 0.15);
       const w = width * scale;
       const h = height * scale;
       const x = (width - w) / 2;
@@ -193,15 +222,16 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       ctx.globalAlpha = 1;
       ctx.drawImage(asset.imageElement, x, y, w, h);
     } else {
-        // Fallback or loading text
-        ctx.fillStyle = '#333';
+        // Fallback for missing/loading assets during playback
+        ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = '#fff';
-        ctx.font = '20px Inter';
-        ctx.fillText(`Scene ${currentScene.id}: Generating visuals...`, 20, 50);
+        ctx.font = '24px Inter';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Generating Scene ${currentScene.id}...`, width/2, height/2);
     }
 
-    // VFX: Vignette
+    // Vignette Overlay
     const gradient = ctx.createRadialGradient(width/2, height/2, width/3, width/2, height/2, width);
     gradient.addColorStop(0, 'rgba(0,0,0,0)');
     gradient.addColorStop(1, 'rgba(0,0,0,0.6)');
@@ -209,13 +239,13 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
-    // Transitions (Crossfade)
+    // Crossfade Transition
     const transitionDuration = 1.0;
-    if (currentScene.end - time < transitionDuration && currentIdx < timeline.length - 1) {
+    if (currentScene.end - clampedTime < transitionDuration && currentIdx < timeline.length - 1) {
       const nextScene = timeline[currentIdx + 1];
       const nextAsset = assets[nextScene.id];
-      if (nextAsset?.imageElement) {
-        const transProgress = 1 - ((currentScene.end - time) / transitionDuration);
+      if (nextAsset?.imageElement && nextAsset.imageElement.complete) {
+        const transProgress = 1 - ((currentScene.end - clampedTime) / transitionDuration);
         ctx.globalAlpha = transProgress;
         ctx.drawImage(nextAsset.imageElement, 0, 0, width, height);
       }
@@ -227,9 +257,9 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     stopAudio();
     if (requestRef.current) cancelAnimationFrame(requestRef.current);
     
-    // Stop recording if active
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    if (isRecordingRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
+        isRecordingRef.current = false;
     }
   };
 
@@ -249,14 +279,25 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
       isPlayingRef.current = false;
       stopAudio();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      // Capture current progress
       pauseTimeRef.current = (Date.now() - startTimeRef.current) / 1000;
     },
     record: async () => {
-        // Ensure clean state
-        handleStop();
+        handleStop(); // Stop any existing playback
         
-        // Ensure Audio Context is ready
+        if (totalDuration === 0) {
+            alert("Timeline is empty.");
+            onPlaybackEnd();
+            return;
+        }
+
+        // 1. Strict Asset Validation
+        if (!validateAssets()) {
+             alert("Some scenes are still generating. Please wait for all images to load before exporting.");
+             onPlaybackEnd();
+             return;
+        }
+
+        // 2. Ensure Audio Context is active
         if (audioContextRef.current?.state === 'suspended') {
             await audioContextRef.current.resume();
         }
@@ -266,33 +307,32 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
         const dest = destinationRef.current;
         
         if (!canvas || !dest) {
-            console.error("Canvas or Audio Destination not initialized");
+            console.error("Resources not initialized");
+            onPlaybackEnd();
             return;
         }
 
-        // Capture canvas stream at 30 FPS
+        // 3. Setup Stream & Recorder
+        // Capture at 30fps constant
         const stream = canvas.captureStream(30);
         
-        // Add Audio Track
-        // Important: Dest stream must have tracks.
         const audioTracks = dest.stream.getAudioTracks();
         if (audioTracks.length > 0) {
             stream.addTrack(audioTracks[0]);
-        } else {
-            console.warn("No audio tracks found in destination stream");
         }
 
         const mimeType = getSupportedMimeType();
         if (!mimeType) {
-            alert("Video download is not supported in this browser.");
+            alert("Browser does not support video recording formats.");
+            onPlaybackEnd();
             return;
         }
 
         try {
-            // High bitrate for quality
+            // Use 15 Mbps for High Quality Output
             const recorder = new MediaRecorder(stream, { 
                 mimeType,
-                videoBitsPerSecond: 5000000 // 5Mbps
+                videoBitsPerSecond: 15000000 
             });
 
             recorder.ondataavailable = (e) => {
@@ -304,35 +344,48 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
             recorder.onstop = () => {
                 const blob = new Blob(chunksRef.current, { type: mimeType });
                 if (blob.size === 0) {
-                    alert("Recording failed: Empty video file. Please try again.");
+                    console.error("Empty recording");
                     return;
                 }
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
+                a.style.display = 'none';
                 a.href = url;
                 const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-                a.download = `gemini-story-${Date.now()}.${ext}`;
+                a.download = `gemini-director-export-${Date.now()}.${ext}`;
                 document.body.appendChild(a);
                 a.click();
-                document.body.removeChild(a);
-                setTimeout(() => URL.revokeObjectURL(url), 100);
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }, 100);
             };
 
             mediaRecorderRef.current = recorder;
-            
-            // Start recording with timeslice to ensure data available events fire regularly
-            recorder.start(100); 
+            isRecordingRef.current = true;
+            recorder.start();
 
-            // Start Playback from 0 for recording
-            isPlayingRef.current = true;
-            startTimeRef.current = Date.now();
-            pauseTimeRef.current = 0;
-            scheduleAudio(0);
-            requestRef.current = requestAnimationFrame(drawFrame);
+            // 4. Start Sequence with Buffers
+            
+            // Render Frame 0 immediately (Pre-roll start)
+            renderCanvas(0);
+
+            // Wait 800ms (Extended Pre-roll) to ensure recorder initialization and start stability
+            setTimeout(() => {
+                if (!isRecordingRef.current) return;
+                
+                isPlayingRef.current = true;
+                startTimeRef.current = Date.now();
+                pauseTimeRef.current = 0;
+                
+                scheduleAudio(0);
+                requestRef.current = requestAnimationFrame(drawFrame);
+            }, 800);
 
         } catch (err) {
             console.error("Recording error:", err);
-            alert(`Failed to start video recording: ${(err as Error).message}`);
+            alert("Failed to start recording.");
+            onPlaybackEnd();
         }
     },
     stopRecording: () => {
@@ -340,7 +393,7 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
     }
   }));
 
-  // Initial Render (Static)
+  // Initial Render
   useEffect(() => {
     if (!isPlayingRef.current && assets[scenes[0]?.id]?.imageElement) {
         renderCanvas(0);
