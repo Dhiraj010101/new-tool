@@ -1,8 +1,11 @@
+
 export interface ScriptScene {
   id: number;
   visualDescription: string;
   narration: string;
   durationEstimate: number; // in seconds
+  transitionType?: 'fade' | 'slide' | 'zoom' | 'blur' | 'dissolve';
+  isHook?: boolean;
 }
 
 export interface GeneratedAsset {
