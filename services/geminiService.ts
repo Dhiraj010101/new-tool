@@ -2,9 +2,6 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ScriptScene } from "../types";
 
-// Always use the direct reference to process.env.API_KEY for initialization as per guidelines.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 // Helper for delays
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -42,6 +39,8 @@ async function withRetry<T>(operation: () => Promise<T>, retries = 12, delayMs =
 
 export const generateScript = async (prompt: string): Promise<ScriptScene[]> => {
   return withRetry(async () => {
+    // Create new instance to ensure latest API key is used
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
       const response = await ai.models.generateContent({
         model: "gemini-3-pro-preview",
@@ -92,16 +91,23 @@ export const generateScript = async (prompt: string): Promise<ScriptScene[]> => 
 
 export const generateSceneImage = async (visualDescription: string, style: string): Promise<string> => {
   return withRetry(async () => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
-      const prompt = `Act as a world-class cinematic art director. Generate a visually stunning image in ${style} style. Scene: ${visualDescription}. Lighting: Cinematic. 8k, photorealistic, no text.`;
+      // Prompt engineered for realism and search grounding
+      const prompt = `Act as a forensic photographer and documentary filmmaker. 
+      Use Google Search to find real-life visual references and authentic context for: "${visualDescription}".
+      Generate a photorealistic, curious, and visually attractive image based on these real-world references.
+      The image should feel like a high-end true crime documentary frame.
+      Style: ${style}, Photorealistic, 8k, Detailed, Cinematic Lighting.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: 'gemini-3-pro-image-preview', // Use Pro model for higher quality and tools
         contents: {
           parts: [{ text: prompt }],
         },
         config: {
-          imageConfig: { aspectRatio: "9:16" }
+          imageConfig: { aspectRatio: "9:16" },
+          tools: [{googleSearch: {}}], // Enable Search Grounding for real-life context
         }
       });
 
@@ -123,6 +129,7 @@ export const generateSceneImage = async (visualDescription: string, style: strin
 
 export const generateNarration = async (text: string, voiceId: string = 'Fenrir'): Promise<string> => {
   return withRetry(async () => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
       if (!text || text.trim().length === 0) throw new Error("Empty text.");
 

@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Download, Video, Loader2, Music, Wand2, Plus, Film, ChevronRight, Palette, RefreshCw, Upload, Mic, Image as ImageIcon, Clock, AlertCircle, Settings2, Sparkles } from 'lucide-react';
+import { Play, Pause, Download, Video, Loader2, Music, Wand2, Plus, Film, ChevronRight, Palette, RefreshCw, Upload, Mic, Image as ImageIcon, Clock, AlertCircle, Settings2, Sparkles, Key } from 'lucide-react';
 import { generateScript, generateSceneImage, generateNarration, decodeAudioData } from './services/geminiService';
 import VideoCanvas, { VideoCanvasHandle } from './components/VideoCanvas';
 import { ScriptScene, GeneratedAsset, AppState } from './types';
@@ -70,9 +70,22 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
+  const [hasApiKey, setHasApiKey] = useState(false);
   
   const videoRef = useRef<VideoCanvasHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const checkKey = async () => {
+        if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
+            const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+            setHasApiKey(hasKey);
+        } else {
+            setHasApiKey(true);
+        }
+    };
+    checkKey();
+  }, []);
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -85,6 +98,17 @@ function App() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isExporting]);
+
+  const handleKeySelection = async () => {
+    if ((window as any).aistudio) {
+        try {
+            await (window as any).aistudio.openSelectKey();
+            setHasApiKey(true);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+  };
 
   const generateAmbientMusic = () => {
     try {
@@ -275,6 +299,13 @@ function App() {
     }));
   };
 
+  const handleUpdateIsHook = (sceneId: number, isHook: boolean) => {
+    setState(prev => ({
+      ...prev,
+      scenes: prev.scenes.map(s => s.id === sceneId ? { ...s, isHook } : s)
+    }));
+  };
+
   const handleMusicUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -304,6 +335,36 @@ function App() {
       setIsPlaying(false);
       setIsExporting(false);
   };
+
+  if (!hasApiKey) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-md space-y-8 text-center animate-in fade-in zoom-in-95 duration-500">
+           <div className="flex justify-center mb-6">
+                <div className="bg-gradient-to-tr from-blue-500 to-purple-500 p-4 rounded-2xl shadow-xl shadow-blue-500/20">
+                    <Video className="w-10 h-10 text-white" />
+                </div>
+            </div>
+            <h1 className="text-4xl font-extrabold tracking-tight">Gemini<span className="text-blue-400">Director</span></h1>
+            <p className="text-zinc-400 text-lg">
+                To generate real-life crime images using Gemini 3 Pro with Search Grounding, you need to select a paid API key.
+            </p>
+            <div className="pt-4">
+                <button 
+                    onClick={handleKeySelection}
+                    className="w-full bg-white text-black hover:bg-zinc-200 h-12 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
+                >
+                    <Key className="w-4 h-4" />
+                    Select API Key
+                </button>
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="block mt-4 text-xs text-zinc-500 hover:text-zinc-300 underline">
+                    Learn about billing requirements
+                </a>
+            </div>
+        </div>
+      </div>
+    );
+  }
 
   const activeScene = state.scenes[currentSceneIndex];
   const hasErrors = (Object.values(state.assets) as GeneratedAsset[]).some(a => a.status === 'error');
@@ -489,6 +550,23 @@ function App() {
                                     <Sparkles className="w-3 h-3 text-blue-400" />
                                 )}
                                 Regenerate Image
+                            </button>
+                        </div>
+
+                        {/* Hook Toggle */}
+                        <div className="flex items-center justify-between bg-zinc-950/30 p-2 rounded border border-zinc-800/50">
+                            <div className="flex items-center gap-2">
+                                <Sparkles className={`w-3.5 h-3.5 ${activeScene.isHook ? 'text-blue-400' : 'text-zinc-600'}`} />
+                                <div>
+                                    <label className="text-[10px] text-zinc-400 uppercase font-bold block">Strong Hook</label>
+                                    <span className="text-[9px] text-zinc-600 block leading-none">Highlights first 5s</span>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => handleUpdateIsHook(activeScene.id, !activeScene.isHook)}
+                                className={`w-9 h-5 rounded-full relative transition-colors ${activeScene.isHook ? 'bg-blue-600' : 'bg-zinc-700'}`}
+                            >
+                                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${activeScene.isHook ? 'translate-x-4' : 'translate-x-0'}`} />
                             </button>
                         </div>
 

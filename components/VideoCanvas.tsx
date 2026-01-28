@@ -34,7 +34,8 @@ const VideoCanvas = forwardRef<VideoCanvasHandle, VideoCanvasProps>(({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   
-  const requestRef = useRef<number>();
+  // Initialize with 0 to satisfy TS "Expected 1 arguments" and allow using as number (requestID)
+  const requestRef = useRef<number>(0);
   const startTimeRef = useRef<number>(0);
   const pauseTimeRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(false);
